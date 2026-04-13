@@ -1,0 +1,2 @@
+pyinstaller>=6.0.0
+cx-Freeze>=7.0.0
