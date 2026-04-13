@@ -1,0 +1,2 @@
+6abd8eb48511d2969a96b669b41a09e6cea94447f2d00c46098f130ae47e88c8  releases/ChatGPTOpenWebUIConverter-1.0.0-win64.msi
+8b3fef090ff263a8767b2ddfa1440dd21ccdd1458e9e2e75c9e8e2016f74d271  releases/ChatGPTOpenWebUIConverter.dmg
