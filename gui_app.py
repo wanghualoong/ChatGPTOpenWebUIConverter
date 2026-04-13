@@ -134,7 +134,7 @@ class App:
         return I18N[self.lang_var.get()][key]
 
     def _build_menu(self) -> None:
-        self.menubar = tk.Menu(self.root)
+        self.menubar = tk.Menu(self.root, tearoff=False)
 
         self.file_menu = tk.Menu(self.menubar, tearoff=False)
         self.file_menu.add_command(command=self.pick_input)
