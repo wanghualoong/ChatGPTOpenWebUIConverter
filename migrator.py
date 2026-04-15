@@ -24,14 +24,81 @@ def _find_conversations_in_zip(path: Path) -> Tuple[bytes, str]:
     try:
         with zipfile.ZipFile(path, "r") as zf:
             candidates = [
-                n for n in zf.namelist() if n.lower().endswith("conversations.json")
+                n
+                for n in zf.namelist()
+                if Path(n).name.lower() == "conversations.json"
             ]
-            if not candidates:
-                raise MigrationError(
-                    "conversations.json not found in zip. Please export data from ChatGPT first."
+            if candidates:
+                selected = sorted(candidates, key=len)[0]
+                return zf.read(selected), selected
+
+            # New ChatGPT exports can shard conversations into:
+            # conversations-000.json, conversations-001.json, ...
+            # and provide file mapping in export_manifest.json.
+            if "export_manifest.json" in zf.namelist():
+                try:
+                    manifest = json.loads(zf.read("export_manifest.json"))
+                except json.JSONDecodeError as exc:
+                    raise MigrationError("export_manifest.json is invalid.") from exc
+
+                logical_files = manifest.get("logical_files")
+                if isinstance(logical_files, dict):
+                    convo = logical_files.get("conversations.json")
+                    shard_files = convo.get("files") if isinstance(convo, dict) else None
+                    if isinstance(shard_files, list) and shard_files:
+                        merged: list[Any] = []
+                        for fname in shard_files:
+                            if not isinstance(fname, str):
+                                continue
+                            try:
+                                chunk = json.loads(zf.read(fname))
+                            except KeyError as exc:
+                                raise MigrationError(
+                                    f"Shard file listed in manifest not found: {fname}"
+                                ) from exc
+                            except json.JSONDecodeError as exc:
+                                raise MigrationError(
+                                    f"Shard file is invalid JSON: {fname}"
+                                ) from exc
+
+                            if isinstance(chunk, list):
+                                merged.extend(chunk)
+                            else:
+                                raise MigrationError(
+                                    f"Shard file format unsupported (expected list): {fname}"
+                                )
+
+                        return (
+                            json.dumps(merged, ensure_ascii=False).encode("utf-8"),
+                            "merged:" + ",".join(shard_files),
+                        )
+
+            # Fallback: merge conversations-*.json if present, even without manifest.
+            shard_candidates = sorted(
+                n for n in zf.namelist() if n.lower().startswith("conversations-") and n.lower().endswith(".json")
+            )
+            if shard_candidates:
+                merged: list[Any] = []
+                for fname in shard_candidates:
+                    try:
+                        chunk = json.loads(zf.read(fname))
+                    except json.JSONDecodeError as exc:
+                        raise MigrationError(f"Shard file is invalid JSON: {fname}") from exc
+                    if isinstance(chunk, list):
+                        merged.extend(chunk)
+                    else:
+                        raise MigrationError(
+                            f"Shard file format unsupported (expected list): {fname}"
+                        )
+
+                return (
+                    json.dumps(merged, ensure_ascii=False).encode("utf-8"),
+                    "merged:" + ",".join(shard_candidates),
                 )
-            selected = sorted(candidates, key=len)[0]
-            return zf.read(selected), selected
+
+            raise MigrationError(
+                "conversations.json not found in zip, and no shard conversations-*.json found."
+            )
     except zipfile.BadZipFile as exc:
         raise MigrationError(f"Invalid zip file: {path}") from exc
 
