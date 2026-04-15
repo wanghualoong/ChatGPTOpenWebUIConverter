@@ -125,6 +125,65 @@ def _validate_chatgpt_export_json(raw: bytes) -> None:
     raise MigrationError("Unsupported JSON structure for OpenWebUI import.")
 
 
+def _infer_conversation_model(conversation: dict[str, Any]) -> str | None:
+    mapping = conversation.get("mapping")
+    if not isinstance(mapping, dict):
+        return None
+
+    # Prefer the most recent assistant message model_slug.
+    best: tuple[float, str] | None = None
+    for node in mapping.values():
+        if not isinstance(node, dict):
+            continue
+        message = node.get("message")
+        if not isinstance(message, dict):
+            continue
+        author = message.get("author")
+        role = author.get("role") if isinstance(author, dict) else None
+        if role != "assistant":
+            continue
+        metadata = message.get("metadata")
+        model_slug = metadata.get("model_slug") if isinstance(metadata, dict) else None
+        if not isinstance(model_slug, str) or not model_slug.strip() or model_slug == "auto":
+            continue
+        create_time = message.get("create_time")
+        ts = float(create_time) if isinstance(create_time, (int, float)) else -1.0
+        candidate = model_slug.strip()
+        if best is None or ts >= best[0]:
+            best = (ts, candidate)
+
+    return best[1] if best else None
+
+
+def _normalize_chatgpt_export_json(raw: bytes) -> bytes:
+    try:
+        data: Any = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise MigrationError("Input JSON is invalid.") from exc
+
+    def patch_list(conversations: list[Any]) -> None:
+        for item in conversations:
+            if not isinstance(item, dict):
+                continue
+            if "mapping" not in item:
+                continue
+            current = item.get("default_model_slug")
+            if isinstance(current, str) and current.strip() and current.strip() != "auto":
+                continue
+            inferred = _infer_conversation_model(item)
+            if inferred:
+                item["default_model_slug"] = inferred
+
+    if isinstance(data, list):
+        patch_list(data)
+    elif isinstance(data, dict):
+        conversations = data.get("conversations")
+        if isinstance(conversations, list):
+            patch_list(conversations)
+
+    return json.dumps(data, ensure_ascii=False).encode("utf-8")
+
+
 def prepare_input(input_path: Path, output_path: Path | None) -> Path:
     suffix = input_path.suffix.lower()
     raw: bytes
@@ -138,12 +197,14 @@ def prepare_input(input_path: Path, output_path: Path | None) -> Path:
         raise MigrationError("Input file must be .zip or .json")
 
     _validate_chatgpt_export_json(raw)
+    normalized = _normalize_chatgpt_export_json(raw)
+    _validate_chatgpt_export_json(normalized)
 
     if output_path is None:
         output_path = Path.cwd() / "openwebui_import.json"
 
     try:
-        output_path.write_bytes(raw)
+        output_path.write_bytes(normalized)
     except OSError as exc:
         raise MigrationError(f"Cannot write output file: {output_path}") from exc
 
